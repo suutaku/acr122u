@@ -1,50 +1,34 @@
 package main
 
 import (
-	"fmt"
-	"log"
-	"os"
+	"net/http"
 
-	"github.com/go-vgo/robotgo"
 	"github.com/suutaku/acr122u/pkg/acr122u"
 )
+
+var h *NFCHandler
+
+func readHandler(w http.ResponseWriter, req *http.Request) {
+	buf := h.Get()
+	w.Write(buf)
+}
+
+func writeHandler(w http.ResponseWriter, req *http.Request) {
+	did := req.URL.Query().Get("did")
+	if did == "" {
+		w.Write([]byte("parameter did was empty"))
+	}
+	h.writeBuf <- did
+}
 
 func main() {
 	ctx, err := acr122u.EstablishContext()
 	if err != nil {
 		panic(err)
 	}
-
-	h := &handler{log.New(os.Stdout, "", 0)}
-
-	ctx.Serve(h)
-}
-
-type handler struct {
-	acr122u.Logger
-}
-
-const block = 0x04
-
-func (h *handler) ServeCard(c acr122u.Card) {
-	var cmdSet acr122u.CommandsSet
-	fmt.Println(c.Name())
-	if c.Name() == acr122u.MIFAREClassic1KStr {
-		cmdSet = &acr122u.MifareClassic1kCommands{}
-	}
-	if c.Name() == acr122u.MIFAREClassic4KStr {
-		cmdSet = &acr122u.MifareClassic1kCommands{}
-	}
-	if c.Name() == acr122u.MIFAREUltralightStr {
-		cmdSet = &acr122u.MifareClassic1kCommands{}
-	}
-	tags, err := acr122u.GetTags(c, cmdSet)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	for i := 0; i < len(tags); i++ {
-		fmt.Printf("%x:%#s\n", tags[i].Message.Type, tags[i].Message.Payload)
-		robotgo.TypeStr(string(tags[i].Message.Payload))
-	}
+	h = NewNFCHander()
+	http.HandleFunc("/read", readHandler)
+	http.HandleFunc("/write", writeHandler)
+	go ctx.Serve(h)
+	http.ListenAndServe(":8090", nil)
 }

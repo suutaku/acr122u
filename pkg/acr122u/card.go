@@ -2,7 +2,6 @@ package acr122u
 
 import (
 	"bytes"
-	"fmt"
 )
 
 // Card represents a ACR122U card
@@ -96,7 +95,6 @@ func (c *card) Name() string {
 		return ""
 	}
 	tk := stat.Atr.TK()
-	fmt.Printf("%x\n", tk)
 
 	if bytes.Equal(tk[7:8], MIFAREClassic1K) {
 		return MIFAREClassic1KStr

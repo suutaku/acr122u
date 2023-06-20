@@ -19,47 +19,122 @@ type Message struct {
 	TypeLength    uint8
 	PayloadLength uint8
 	Type          []byte
+	Id            []byte
 	Payload       []byte
 }
 
-func NewMessage(buf []byte) *Message {
-	if len(buf) < 3 {
-		fmt.Printf("invalid message buf with length: %v\n", len(buf))
-		return nil
-	}
+func NewMessage(t, msg []byte) *Message {
 	ret := &Message{}
-	ret.TNF = buf[0]
-	ret.TypeLength = buf[1]
-	ret.PayloadLength = buf[2]
-	exceptLen := uint8(3) // 1 (tnf) + 1 (type len) + 1 (payload len)
-	exceptLen += ret.TypeLength + ret.PayloadLength
-	if len(buf) < int(exceptLen) {
-		fmt.Printf("unexcepted message buf with length: %v, excepted: %v\n", len(buf), exceptLen)
-		return nil
+	if t == nil || msg == nil {
+		return ret
 	}
-	ret.Type = buf[3 : 4+ret.TypeLength]
-	ret.Payload = buf[4+ret.TypeLength:]
+	ret.TNF = 0xd1
+	ret.TypeLength = uint8(len(t) - 1)
+	ret.PayloadLength = uint8(len(msg))
+	ret.Type = t[:ret.TypeLength]
+	ret.Id = t[ret.TypeLength:]
+	ret.Payload = msg
 	return ret
 }
 
-func NewTag(buf []byte) *Tag {
+func (msg *Message) Unmarshal(buf []byte) error {
 	if len(buf) < 3 {
-		fmt.Printf("invalid tag buf with length: %v\n", len(buf))
+		return fmt.Errorf("invalid message buf with length: %v\n", len(buf))
+	}
+
+	msg.TNF = buf[0]
+	msg.TypeLength = buf[1]
+	msg.PayloadLength = buf[2]
+	msg.Type = buf[3 : 3+msg.TypeLength]
+	msg.Id = buf[3+msg.TypeLength : 4+msg.TypeLength]
+	msg.Payload = buf[4+msg.TypeLength:]
+	return nil
+}
+
+func (msg *Message) Marshal() ([]byte, error) {
+	expLen := uint8(3)
+	expLen += msg.TypeLength + msg.PayloadLength + 1 // type len + id len + payload len
+
+	buf := make([]byte, 3)
+	buf[0] = msg.TNF
+	buf[1] = msg.TypeLength
+	buf[2] = msg.PayloadLength
+	buf = append(buf, msg.Type...)
+	buf = append(buf, msg.Id...)
+	buf = append(buf, msg.Payload...)
+	return buf, nil
+
+}
+
+func NewTag(t []byte, m string) *Tag {
+	msg := NewMessage(t, []byte(m))
+	b, err := msg.Marshal()
+	if err != nil {
 		return nil
 	}
-	ret := &Tag{}
+
+	return &Tag{Message: msg, Length: uint8(len(b))}
+}
+
+func (tag *Tag) Unmarshal(buf []byte) error {
+	if len(buf) < 3 {
+		return fmt.Errorf("invalid tag buf with length: %v\n", len(buf))
+	}
+
 	// get lenth
-	ret.Length = buf[1]
-	exceptLen := uint8(3 + ret.Length)
-	if len(buf) < int(exceptLen) {
-		fmt.Printf("unexcepted tag buf with length: %v, excepted: %v\n", len(buf), exceptLen)
-		return nil
+	tag.Length = buf[1]
+	msg := buf[2 : len(buf)-1]
+	tag.Message = NewMessage(nil, nil)
+	return tag.Message.Unmarshal(msg)
+}
+
+func (tag *Tag) Marshal() ([]byte, error) {
+
+	buf := make([]byte, 1)
+	buf[0] = NDEF
+	buf = append(buf, tag.Length)
+	msg, err := tag.Message.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("tag unmarshal message: %v", err)
+	}
+	buf = append(buf, msg...)
+	buf = append(buf, ENDFILE)
+
+	return buf, nil
+}
+
+func PutTag(c Card, cmds CommandsSet, tag *Tag, key ...byte) error {
+	_, err := c.Transmit(cmds.CmdLoadAuth(key...))
+	if err != nil {
+		return fmt.Errorf("load auth: %v", err)
 	}
 
-	msg := buf[2 : exceptLen-1]
-	ret.Message = NewMessage(msg)
-	return ret
+	block := DEFAULT_BLOCK_NUM
+	//append start and stop byte
+	memory, err := tag.Marshal()
+	if err != nil {
+		return err
+	}
+	memory = append([]byte{0x00, 0x00}, memory...)
+	for len(memory)%16 != 0 {
+		memory = append(memory, []byte{0x00}...)
+	}
+	fmt.Printf("put memory: [%x]\n", memory)
+	// spit to blocks
+	for i := 0; i < len(memory); i += 16 {
 
+		_, err = c.Transmit(cmds.CmdAuthBlock([]byte{block}))
+		if err != nil {
+			return err
+		}
+		_, err = c.Transmit(cmds.CmdWriteBlock(memory[i:i+16], []byte{block}))
+		if err != nil {
+			return fmt.Errorf("write at %d: %v", 0x04, err)
+		}
+		block++
+	}
+
+	return err
 }
 
 func GetTags(c Card, cmds CommandsSet, key ...byte) ([]*Tag, error) {
@@ -99,9 +174,12 @@ func GetTags(c Card, cmds CommandsSet, key ...byte) ([]*Tag, error) {
 
 			buf := memory[startP : i+1]
 			startP = -1
-			t := NewTag(buf)
-			if t != nil {
+			t := NewTag(nil, "")
+			fmt.Printf("get %x\n", buf)
+			if err := t.Unmarshal(buf); err == nil {
 				ret = append(ret, t)
+			} else {
+				fmt.Printf("%v\n", err)
 			}
 		}
 	}
